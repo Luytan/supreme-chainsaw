@@ -102,11 +102,11 @@ pub fn read_pci_devices() -> std::io::Result<HashMap<String, Devices>> {
             let device = Devices {
                 pci_address: pci_address.clone(),
                 iommu_group: group_id,
-                vendor_id: vendor_id,
-                device_id: device_id,
-                vendor_name: vendor_name,
-                device_name: device_name,
-                driver: driver,
+                vendor_id,
+                device_id,
+                vendor_name,
+                device_name,
+                driver,
             };
             devices_map.insert(pci_address, device);
         }
@@ -176,7 +176,7 @@ fn get_driver(pci_address: &str) -> String {
         .join("driver");
 
     fs::read_link(&driver_path)
-        .ok() // ignore les erreurs
+        .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "none".to_string())
 }
