@@ -113,6 +113,39 @@ pub fn read_pci_devices() -> std::io::Result<HashMap<String, Devices>> {
     }
     Ok(devices_map)
 }
+pub fn list_iommu_groups() -> std::io::Result<()> {
+    let iommu_groups = read_iommu_groups()?;
+
+    if iommu_groups.is_empty() {
+        println!("No IOMMU groups found.");
+        return Ok(());
+    }
+
+    println!("IOMMU Groups detected:\n");
+    for group_id in iommu_groups.keys() {
+        let group = &iommu_groups[&group_id];
+        println!("Group {}: {:?}", group.id, group.devices);
+    }
+    Ok(())
+}
+pub fn list_pci_devices() -> std::io::Result<()> {
+    let pci_devices = read_pci_devices()?;
+    if pci_devices.is_empty() {
+        println!("No device??");
+        return Ok(());
+    }
+    for pci_address in pci_devices.keys() {
+        let device = &pci_devices[&pci_address.to_string()];
+        println!("Device: {}", device.pci_address);
+        println!("| IOMMU GROUP: {}", device.iommu_group);
+        println!("| VENDOR_ID: {}", device.vendor_id);
+        println!("| DEVICE_ID: {}", device.device_id);
+        println!("| DRIVER: {}", device.driver);
+        println!();
+    }
+    Ok(())
+}
+
 fn get_vendor_id(pci_address: &str) -> io::Result<String> {
     // /sys/bus/pci/devices/{PCI}/vendor
     let vendor_path = Path::new("/sys/bus/pci/devices/")
