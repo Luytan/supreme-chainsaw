@@ -8,6 +8,7 @@ pub struct IommuGroup {
     pub devices: Vec<String>, // a vec containing the pci address of the devices
 }
 // struct for Devices
+#[derive(Debug)]
 pub struct Devices {
     pub pci_address: String, //address of the pci device, example: 0000:00:08.0 for a gpu
     pub iommu_group: usize,  // id of the iommu group
@@ -96,7 +97,7 @@ pub fn read_pci_devices() -> std::io::Result<HashMap<String, Devices>> {
             let vendor_id = get_vendor_id(&pci_address)?;
             let device_id = get_device_id(&pci_address)?;
             let vendor_name = get_vendor_name(&pci_address)?;
-            let device_name = get_vendor_name(&pci_address)?;
+            let device_name = get_device_name(&pci_address)?;
             let driver = get_driver(&pci_address);
             // create a device struct
             let device = Devices {
@@ -131,7 +132,7 @@ pub fn list_iommu_groups() -> std::io::Result<()> {
 pub fn list_pci_devices() -> std::io::Result<()> {
     let pci_devices = read_pci_devices()?;
     if pci_devices.is_empty() {
-        println!("No device??");
+        println!("No PCI devices found.");
         return Ok(());
     }
     for pci_address in pci_devices.keys() {
