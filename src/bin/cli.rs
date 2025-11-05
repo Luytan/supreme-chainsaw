@@ -20,6 +20,8 @@ enum Commands {
     },
     /// Get the current mode
     GetMode,
+    /// List supported modes
+    ListMode,
 }
 
 #[tokio::main]
@@ -45,6 +47,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::GetMode => {
             let current_mode: u8 = proxy.call("GetMode", &()).await?;
             println!("Current gpu mode: {}", current_mode);
+        }
+        Commands::ListMode => {
+            let response: Vec<String> = proxy.call("ListMode", &()).await?;
+            for mode in response {
+                println!("{}", mode);
+            }
         }
     }
 
