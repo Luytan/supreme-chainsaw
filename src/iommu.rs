@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::{fs, io};
+use std::fs::File;
+use std::io::BufRead;
 
 // struct for IommuGroup
 pub struct IommuGroup {
@@ -8,8 +10,8 @@ pub struct IommuGroup {
     pub devices: Vec<String>, // a vec containing the pci address of the devices
 }
 // struct for Devices
-#[derive(Debug)]
-pub struct Devices {
+#[derive(Debug, Clone)]
+pub struct Device {
     pub pci_address: String, //address of the pci device, example: 0000:00:08.0 for a gpu
     pub iommu_group: usize,  // id of the iommu group
     pub vendor_id: String,
@@ -17,6 +19,7 @@ pub struct Devices {
     pub vendor_name: String,
     pub device_name: String,
     pub driver: String,
+    pub class: String,
 }
 
 pub fn read_iommu_groups() -> std::io::Result<HashMap<usize, IommuGroup>> {
@@ -51,31 +54,25 @@ pub fn read_iommu_groups() -> std::io::Result<HashMap<usize, IommuGroup>> {
             Err(_) => continue, // Skip non-numeric entries (shouldn't happen, but safe)
         };
 
-        // Devices are in the "devices" subdirectory, example: iommu_groups/0/devices/pci_address
+        // Devices are in the "devices" subdirectory, example: iommu_groups/0/devices/<pci_address>
         let devices_dir = group_dir.join("devices");
         let mut devices = Vec::new();
-        // if the devices dir exist, will get all the pci address
+
+        // If the devices directory exists, collect all PCI addresses
         if devices_dir.exists() {
             for device_entry in fs::read_dir(&devices_dir)? {
-                // if ok, store path in device_entry
                 let device_entry = device_entry?;
-                // get file_name without the path
                 let device_name = device_entry.file_name();
-                // convert device_name from OsString to UTF-8
                 if let Some(name_str) = device_name.to_str() {
-                    // push to devices vector
                     devices.push(name_str.to_string());
                 }
             }
         }
-        // insert a new iommu in the hashmap
+
+        // Insert the IOMMU group into the hashmap
         groups.insert(
-            group_id, // key
-            IommuGroup {
-                // value
-                id: group_id,
-                devices,
-            },
+            group_id,
+            IommuGroup { id: group_id, devices },
         );
     }
 
@@ -87,10 +84,10 @@ pub fn read_iommu_groups() -> std::io::Result<HashMap<usize, IommuGroup>> {
  *
  *
  */
-pub fn read_pci_devices() -> std::io::Result<HashMap<String, Devices>> {
+pub fn read_pci_devices() -> std::io::Result<HashMap<String, Device>> {
     let iommu_groups = read_iommu_groups()?;
-    // map for devices
-    let mut devices_map: HashMap<String, Devices> = HashMap::new();
+
+    let mut devices_map: HashMap<String, Device> = HashMap::new();
 
     for (group_id, group) in iommu_groups {
         for pci_address in group.devices {
@@ -99,8 +96,9 @@ pub fn read_pci_devices() -> std::io::Result<HashMap<String, Devices>> {
             let vendor_name = get_vendor_name(&pci_address)?;
             let device_name = get_device_name(&pci_address)?;
             let driver = get_driver(&pci_address);
+            let class = get_class(&pci_address)?;
             // create a device struct
-            let device = Devices {
+            let device = Device {
                 pci_address: pci_address.clone(),
                 iommu_group: group_id,
                 vendor_id,
@@ -108,6 +106,7 @@ pub fn read_pci_devices() -> std::io::Result<HashMap<String, Devices>> {
                 vendor_name,
                 device_name,
                 driver,
+                class,
             };
             devices_map.insert(pci_address, device);
         }
@@ -122,7 +121,7 @@ pub fn list_iommu_groups() -> std::io::Result<()> {
         return Ok(());
     }
 
-    println!("IOMMU Groups detected:\n");
+    println!("IOMMU groups detected:\n");
     for group_id in iommu_groups.keys() {
         let group = &iommu_groups[&group_id];
         println!("Group {}: {:?}", group.id, group.devices);
@@ -148,7 +147,7 @@ pub fn list_pci_devices() -> std::io::Result<()> {
 }
 
 fn get_vendor_id(pci_address: &str) -> io::Result<String> {
-    // /sys/bus/pci/devices/{PCI}/vendor
+    // Read vendor ID from /sys/bus/pci/devices/{PCI}/vendor
     let vendor_path = Path::new("/sys/bus/pci/devices/")
         .join(&pci_address)
         .join("vendor");
@@ -156,28 +155,57 @@ fn get_vendor_id(pci_address: &str) -> io::Result<String> {
     Ok(content.trim_end().to_string())
 }
 fn get_device_id(pci_address: &str) -> io::Result<String> {
-    // /sys/bus/pci/devices/{PCI}/device
+    // Read device ID from /sys/bus/pci/devices/{PCI}/device
     let device_path = Path::new("/sys/bus/pci/devices/")
         .join(&pci_address)
         .join("device");
     let content = fs::read_to_string(&device_path)?;
     Ok(content.trim_end().to_string())
 }
-fn get_vendor_name(pci_address: &str) -> io::Result<String> {
-    // IDK HOW
+fn get_vendor_name(_pci_address: &str) -> io::Result<String> {
+    // Vendor name lookup not implemented yet
     Ok("NOT IMPLEMENTED".to_string())
 }
 fn get_device_name(pci_address: &str) -> io::Result<String> {
-    // will do later
-    Ok("NOT IMPLEMENTED".to_string())
+    // Try to resolve the device name from the system pci.ids database
+    let pci_database = Path::new("/usr/share/hwdata/pci.ids");
+    let device_id = get_device_id(&pci_address)?.replace("0x","").trim().to_string();
+    if !pci_database.exists() {
+        return Ok("pci.ids database not found".to_string());
+    }
+    let file = File::open(pci_database)?;
+    let reader = io::BufReader::new(file);
+    for line in reader.lines() {
+        let line = line?;
+        if line.contains(device_id.as_str()) {
+            return Ok(line.trim().to_string().replace(&device_id, "").trim().to_string());
+        }
+    }
+    Ok("device not found in pci.ids".to_string())
+
 }
 fn get_driver(pci_address: &str) -> String {
     let driver_path = Path::new("/sys/bus/pci/devices/")
         .join(pci_address)
         .join("driver");
-
+    // get the driver folder symlink, which should be the driver
     fs::read_link(&driver_path)
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "none".to_string())
+}
+fn get_class(pci_address: &str) -> io::Result<String> {
+    // /sys/bus/pci/devices/{PCI}/device
+    let device_path = Path::new("/sys/bus/pci/devices/")
+        .join(&pci_address)
+        .join("class");
+    let content = fs::read_to_string(&device_path)?;
+    Ok(content.trim_end().to_string())
+}
+pub fn pci_rescan() -> Result<(), std::io::Error> {
+    let pci_rescan_path = Path::new("/sys/bus/pci/rescan");
+    match fs::write(pci_rescan_path, "1") {
+        Ok(_) => Ok(()),
+        Err(e) => Err(e),
+    }
 }
