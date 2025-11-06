@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             default = gpu.is_default()
         );
     }
-    let _conn = connection::Builder::session()?
+    let _conn = connection::Builder::system()?
         .name("com.luytan.daemon")?
         .serve_at("/com/luytan/daemon", daemon)?
         .build()

@@ -28,7 +28,7 @@ enum Commands {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let connection = zbus::connection::Builder::session()?
+    let connection = zbus::connection::Builder::system()?
         .build()
         .await?;
 
