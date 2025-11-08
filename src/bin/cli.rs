@@ -28,20 +28,19 @@ enum Commands {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let connection = zbus::connection::Builder::system()?
-        .build()
-        .await?;
+    let connection = zbus::connection::Builder::system()?.build().await?;
 
     let proxy = zbus::Proxy::new(
         &connection,
         "com.luytan.daemon",
         "/com/luytan/daemon",
         "com.luytan.daemon",
-    ).await?;
+    )
+    .await?;
 
     match args.command {
         Commands::SetMode { mode } => {
-            let response: String= proxy.call("SetMode", &(mode,)).await?;
+            let response: String = proxy.call("SetMode", &(mode,)).await?;
             println!("{}", response);
         }
         Commands::GetMode => {

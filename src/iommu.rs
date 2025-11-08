@@ -1,8 +1,8 @@
 use std::collections::HashMap;
-use std::path::Path;
-use std::{fs, io};
 use std::fs::File;
 use std::io::BufRead;
+use std::path::Path;
+use std::{fs, io};
 
 // struct for IommuGroup
 pub struct IommuGroup {
@@ -72,7 +72,10 @@ pub fn read_iommu_groups() -> std::io::Result<HashMap<usize, IommuGroup>> {
         // Insert the IOMMU group into the hashmap
         groups.insert(
             group_id,
-            IommuGroup { id: group_id, devices },
+            IommuGroup {
+                id: group_id,
+                devices,
+            },
         );
     }
 
@@ -169,7 +172,10 @@ fn get_vendor_name(_pci_address: &str) -> io::Result<String> {
 fn get_device_name(pci_address: &str) -> io::Result<String> {
     // Try to resolve the device name from the system pci.ids database
     let pci_database = Path::new("/usr/share/hwdata/pci.ids");
-    let device_id = get_device_id(&pci_address)?.replace("0x","").trim().to_string();
+    let device_id = get_device_id(&pci_address)?
+        .replace("0x", "")
+        .trim()
+        .to_string();
     if !pci_database.exists() {
         return Ok("pci.ids database not found".to_string());
     }
@@ -178,11 +184,15 @@ fn get_device_name(pci_address: &str) -> io::Result<String> {
     for line in reader.lines() {
         let line = line?;
         if line.contains(device_id.as_str()) {
-            return Ok(line.trim().to_string().replace(&device_id, "").trim().to_string());
+            return Ok(line
+                .trim()
+                .to_string()
+                .replace(&device_id, "")
+                .trim()
+                .to_string());
         }
     }
     Ok("device not found in pci.ids".to_string())
-
 }
 fn get_driver(pci_address: &str) -> String {
     let driver_path = Path::new("/sys/bus/pci/devices/")
