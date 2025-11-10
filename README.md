@@ -8,6 +8,9 @@ A tiny prototype to manage GPU mode on Linux via D-Bus. It discovers GPUs from s
 
 Status: prototype. Expect rough edges.
 
+## Warning
+This tool was tested on a amd/amd hybrid asus rog laptop, there might be issues with non-asus/nvidia laptops 
+
 ## Requirements
 
 - Linux with IOMMU enabled and `/sys/bus/pci` available
@@ -19,36 +22,32 @@ Status: prototype. Expect rough edges.
 
 ```bash
 # from the repository root
-cargo build --release
+make build
 ```
-
-Artifacts:
-- `target/release/daemon`
-- `target/release/cli`
+## Install
+```bash
+sudo make install
+```
 
 ## Run
-MUST BE IN ROOT
 
-Start the daemon (session bus):
+The daemon systemctl service should be enabled and started automatically:
+systemctl status chainsawd.service
 
-```bash
-./target/release/daemon
-```
-The default mode is 0, since i didn't implement a check at startup
 Query and set mode using the CLI:
 
 ```bash
 # Show supported modes
-./target/release/cli list-mode
+chainsaw list
 
 # Get current mode
-./target/release/cli get-mode
+chainsaw get
 
 # Set mode (0 = Integrated, 1 = Hybrid, 2 = VFIO)
-./target/release/cli set-mode 1
+chainsaw set 1
 ```
 
-Tip: use `./target/release/cli --help` to see the exact command syntax.
+Tip: use `chainsaw --help` to see the exact command syntax.
 
 ## Notes
 
