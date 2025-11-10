@@ -92,7 +92,12 @@ pub fn unbind_gpu(pci_address: &str, slot: usize) -> io::Result<()> {
         .join("unbind");
 
     fs::write(unbind_path, pci_address)?;
-    
+        
+    let remove_path = Path::new("/sys/bus/pci/devices")
+        .join(pci_address)
+        .join("remove");
+
+    fs::write(remove_path, "1")?;
     // Power off the GPU after unbinding
     set_gpu_power(slot, false)?;
     
@@ -101,15 +106,9 @@ pub fn unbind_gpu(pci_address: &str, slot: usize) -> io::Result<()> {
 /// Re-bind the GPU to its driver.
 /// Currently this will poweron the gpu, remove the pci device and triggers a PCI rescan
 /// verification that the correct driver bound is not yet implemented.
-pub fn bind_gpu(pci_address: &str, slot: usize) -> io::Result<String> {
+pub fn bind_gpu(_pci_address: &str, slot: usize) -> io::Result<String> {
     // Power on the GPU before binding
     set_gpu_power(slot, true)?;
-    
-    let remove_path = Path::new("/sys/bus/pci/devices")
-        .join(pci_address)
-        .join("remove");
-
-    fs::write(remove_path, "1")?;
 
     iommu::pci_rescan()?;
 
