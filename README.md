@@ -1,6 +1,6 @@
 # chainsaw (temporary name)
 
-A tiny prototype to manage GPU mode on Linux via D-Bus. It discovers GPUs from sysfs and lets you switch between:
+A tiny prototype to manage GPU mode on Linux. It discovers GPUs from sysfs and lets you switch between:
 
 - 0 = Integrated
 - 1 = Hybrid
