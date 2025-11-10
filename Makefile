@@ -6,7 +6,7 @@ TARGET_DIR = release
 PREFIX ?= /usr
 BINDIR ?= $(PREFIX)/bin
 SYSTEMD_SYSTEM_UNIT_DIR ?= $(PREFIX)/lib/systemd/system
-DBUS_SYSTEM_DIR ?= $(PREFIX)/share/dbus-1/system.d
+DBUS_SYSTEM_DIR ?= /etc/dbus-1/system.d
 
 # Install commands
 INSTALL := install
@@ -55,12 +55,12 @@ ifeq ($(DESTDIR),)
 	@echo "Reloading systemd daemon..."
 	systemctl daemon-reload
 	@if systemctl is-enabled --quiet $(SERVICE_FILE) 2>/dev/null; then \
-		echo "Restarting service..."; \
-		systemctl restart $(SERVICE_FILE); \
+		echo "Service already enabled."; \
 	else \
-		echo "Enabling and starting service..."; \
-		systemctl enable --now $(SERVICE_FILE); \
+		echo "Enabling service..."; \
+		systemctl enable $(SERVICE_FILE); \
 	fi
+	@echo "Please reboot."
 endif
 
 .PHONY: build check install
