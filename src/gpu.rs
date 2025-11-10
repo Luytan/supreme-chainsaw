@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path};
-use crate::iommu;
-use crate::iommu::Device;
+use std::io;
+use std::path::Path;
+
+use crate::iommu::{self, Device};
+
 /// Struct representing a GPU device
 #[derive(Debug, Clone)]
 pub struct Gpu {
@@ -11,6 +13,7 @@ pub struct Gpu {
     pci: String,
     render: String,
     default: bool,
+    slot: usize,
 }
 
 impl Gpu {
@@ -38,104 +41,142 @@ impl Gpu {
     pub fn render_node(&self) -> &str {
         &self.render
     }
+
+    /// Returns the PCI slot number
+    pub fn slot(&self) -> usize {
+        self.slot
+    }
 }
 
-/// Will search all device to find a gpu via driver, in the future this might be integrated to the
-/// iommu::read_iommu_groups function
-pub fn list_gpu(pci_devices: HashMap<String, Device>) -> Result<HashMap<String, Gpu>, Box<dyn std::error::Error>> {
-    let mut gpu_map: HashMap<String, Gpu> = HashMap::new();
-    let mut i:usize = 0;
-    for (_, device) in &pci_devices {
-        match device.class.as_str() {
-            "0x030000" => {
-                let boot_vga_path = Path::new("/sys/bus/pci/devices").join(&device.pci_address).join("boot_vga");
-                // Read the content of the boot_vga file as a string
-                let boot_vga_content = fs::read_to_string(&boot_vga_path)?;
-                // Parse the string to determine if it's default
-                // Trim whitespace and check the first character
-                let is_default = boot_vga_content.trim() == "1";
-                let gpu = Gpu {
-                    id: i,
-                    name: device.device_name.clone(),
-                    pci: device.pci_address.clone(),
-                    render: get_render(device.pci_address.clone()),
-                    default: is_default,
-                };
-                gpu_map.insert(gpu.id.to_string(), gpu);
-                i += 1;
-            }
-            _ => continue,
-        }
+/// Discover GPUs among PCI devices using the VGA (0x030000) class code.
+pub fn list_gpu(pci_devices: &HashMap<String, Device>) -> io::Result<HashMap<String, Gpu>> {
+    let mut gpu_map = HashMap::new();
+
+    for (id, device) in pci_devices
+        .values()
+        .filter(|device| device.class.as_str() == "0x030000")
+        .enumerate()
+    {
+        let boot_vga_path = Path::new("/sys/bus/pci/devices")
+            .join(&device.pci_address)
+            .join("boot_vga");
+
+        let is_default = fs::read_to_string(boot_vga_path)?.trim() == "1";
+
+        let gpu = Gpu {
+            id,
+            name: device.device_name.clone(),
+            pci: device.pci_address.clone(),
+            render: render_node_path(&device.pci_address),
+            default: is_default,
+            slot: find_pci_slot(&device.pci_address).unwrap_or(0),
+        };
+
+        gpu_map.insert(id.to_string(), gpu);
     }
+
     Ok(gpu_map)
 }
-/// unbind the gpu using the pci bus
+/// unbind the gpu using the pci bus then power-down the device
 /// before unbinding, the function should check if the gpu is in use via fn is_sleeping
-pub fn unbind_gpu(pci_address: &str) -> Result<(), std::io::Error> {
-    // Call is_sleeping
-    let is_device_sleeping = is_sleeping(pci_address)?;
-
-    let pci_path = Path::new("/sys/bus/pci/devices").join(pci_address);
-    let unbind_path = pci_path.join("driver").join("unbind");
-
-    match is_device_sleeping {
-        true => {
-            // Device is sleeping (D3cold), proceed with unbind
-            fs::write(unbind_path, pci_address)?;
-            Ok(()) // Return Ok(()) after successful write
-        }
-        false => {
-            // Device is not sleeping, return an error
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Device is not in sleep state (D3cold), cannot safely unbind", // Fixed typo
-            ))
-        }
+pub fn unbind_gpu(pci_address: &str, slot: usize) -> io::Result<()> {
+    if !is_sleeping(pci_address)? {
+        return Err(std::io::Error::other(
+            "Device is not in sleep state (D3cold), cannot safely unbind",
+        ));
     }
+
+    let unbind_path = Path::new("/sys/bus/pci/devices")
+        .join(pci_address)
+        .join("driver")
+        .join("unbind");
+
+    fs::write(unbind_path, pci_address)?;
+    
+    // Power off the GPU after unbinding
+    set_gpu_power(slot, false)?;
+    
+    Ok(())
 }
 /// Re-bind the GPU to its driver.
-///
-/// Currently this triggers a PCI rescan; verification that the correct driver bound is
-/// not yet implemented.
-pub fn bind_gpu(pci_address: &str) -> Result<String, std::io::Error> {
-    let pci_path = Path::new("/sys/bus/pci/devices").join(pci_address);
-    let remove_path = pci_path.join("remove");
+/// Currently this will poweron the gpu, remove the pci device and triggers a PCI rescan
+/// verification that the correct driver bound is not yet implemented.
+pub fn bind_gpu(pci_address: &str, slot: usize) -> io::Result<String> {
+    // Power on the GPU before binding
+    set_gpu_power(slot, true)?;
+    
+    let remove_path = Path::new("/sys/bus/pci/devices")
+        .join(pci_address)
+        .join("remove");
+
     fs::write(remove_path, "1")?;
-    match iommu::pci_rescan(){
-        Ok(..) => {
-            Ok("Rescan issued; verification not yet implemented".to_string())
-        },
-        Err(e) => Err(e)
-    }
 
+    iommu::pci_rescan()?;
+
+    Ok("Rescan issued; verification not yet implemented".to_string())
 }
 
-/// Checks the device power_state status
-fn is_sleeping(pci_address: &str) -> Result<bool, std::io::Error> {
-    let pci_path = Path::new("/sys/bus/pci/devices").join(pci_address);
-    let power_state_path = pci_path.join("power_state");
-    let content = fs::read_to_string(&power_state_path)?;
-    if content.trim() == "D3cold" {
-        Ok(true)
-    } else {
-        Ok(false)
-    }
+/// Checks the device power_state status, returns 1 if GPU is D3cold
+fn is_sleeping(pci_address: &str) -> io::Result<bool> {
+    let power_state_path = Path::new("/sys/bus/pci/devices")
+        .join(pci_address)
+        .join("power_state");
+
+    Ok(fs::read_to_string(power_state_path)?.trim() == "D3cold")
 }
-fn get_process_name(pid: String) -> Option<String> {
-    std::fs::read_to_string(format!("/proc/{}/status", pid))
-        .ok()?
-        .lines()
-        .next()?
-        .split_whitespace()
-        .nth(1)
-        .map(|s| s.to_string())
+
+
+fn render_node_path(pci_address: &str) -> String {
+    let dri_path = format!("/dev/dri/by-path/pci-{}-render", pci_address);
+
+    fs::read_link(&dri_path)
+        .map(|render| render.to_string_lossy().replace("../", "/dev/dri/"))
+        .unwrap_or_else(|_| "Error: couldn't read symlink for render node".to_string())
 }
-fn get_render(pci_address: String) -> String {
-    let dri_path = format!("/dev/dri/by-path/{}-render", pci_address);
-    if let Ok(render) = fs::read_link(&dri_path) {
-        let render_path = render.to_string_lossy().replace("../", "/dev/dri/");
-        render_path.to_string()
-    } else {
-        "Error: couldn't read symlink for render node".to_string()
+
+/// Find the PCI slot number for a given PCI address
+fn find_pci_slot(pci_address: &str) -> io::Result<usize> {
+    let slots_dir = Path::new("/sys/bus/pci/slots");
+    
+    // Remove the function part (e.g., "0000:03:00.0" -> "0000:03:00")
+    let pci_short = pci_address.trim_end_matches(|c: char| c == '.' || c.is_ascii_digit());
+    
+    // Iterate through all slot directories
+    for entry in fs::read_dir(slots_dir)? {
+        let entry = entry?;
+        if let Ok(slot_name) = entry.file_name().into_string() {
+            // Try to parse the slot number
+            if let Ok(slot_num) = slot_name.parse::<usize>() {
+                let address_path = entry.path().join("address");
+                if let Ok(address) = fs::read_to_string(&address_path)
+                    && address.trim() == pci_short
+                {
+                    return Ok(slot_num);
+                }
+            }
+        }
     }
+    
+    Err(io::Error::new(io::ErrorKind::NotFound, "PCI slot not found"))
+}
+
+
+pub fn is_dgpu_bound(pci_address: &str) -> io::Result<bool> {
+    let driver_path = Path::new("/sys/bus/pci/devices")
+        .join(pci_address)
+        .join("driver");
+
+    Ok(driver_path.exists())
+}
+
+/// Power on or off a GPU using its PCI slot
+pub fn set_gpu_power(slot: usize, power_on: bool) -> io::Result<()> {
+    let power_path = Path::new("/sys/bus/pci/slots")
+        .join(slot.to_string())
+        .join("power");
+
+    let value = if power_on { "1" } else { "0" };
+    fs::write(power_path, value)?;
+    
+    Ok(())
 }
