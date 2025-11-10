@@ -1,5 +1,4 @@
 use clap::{Parser, Subcommand};
-use zbus;
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -11,7 +10,7 @@ struct Args {
 #[derive(Subcommand)]
 enum Commands {
     /// Set the mode
-    SetMode {
+    Set {
         /// Mode
         /// 0 = Integrated
         /// 1 = Hybrid
@@ -19,36 +18,35 @@ enum Commands {
         mode: u8,
     },
     /// Get the current mode
-    GetMode,
+    Get,
     /// List supported modes
-    ListMode,
+    List,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let connection = zbus::connection::Builder::system()?
-        .build()
-        .await?;
+    let connection = zbus::connection::Builder::system()?.build().await?;
 
     let proxy = zbus::Proxy::new(
         &connection,
-        "com.luytan.daemon",
-        "/com/luytan/daemon",
-        "com.luytan.daemon",
-    ).await?;
+        "com.chainsaw.daemon",
+        "/com/chainsaw/daemon",
+        "com.chainsaw.daemon",
+    )
+    .await?;
 
     match args.command {
-        Commands::SetMode { mode } => {
-            let response: String= proxy.call("SetMode", &(mode,)).await?;
+        Commands::Set { mode } => {
+            let response: String = proxy.call("SetMode", &(mode,)).await?;
             println!("{}", response);
         }
-        Commands::GetMode => {
+        Commands::Get => {
             let current_mode: u8 = proxy.call("GetMode", &()).await?;
             println!("Current gpu mode: {}", current_mode);
         }
-        Commands::ListMode => {
+        Commands::List => {
             let response: Vec<String> = proxy.call("ListMode", &()).await?;
             for mode in response {
                 println!("{}", mode);

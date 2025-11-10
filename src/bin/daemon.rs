@@ -1,65 +1,88 @@
-use std::{error::Error, future::pending};
 use std::collections::HashMap;
-use zbus::{connection, interface};
+use std::{error::Error, future::pending};
+
+use chainsaw::iommu::Device;
+use chainsaw::{gpu, iommu};
 use tokio::sync::RwLock;
-use repctl::{gpu, iommu};
-use repctl::iommu::Device;
+use zbus::{connection, fdo, interface};
 
 struct Daemon {
     current_mode: RwLock<u8>,
-    // Cached PCI devices; kept for future 
-    pci_devices: HashMap<String, Device>,
     gpu_list: HashMap<String, gpu::Gpu>,
+    // Cached PCI devices for future features.
+    _pci_devices: HashMap<String, Device>,
 }
 impl Daemon {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let pci_devices = iommu::read_pci_devices()?;
-        let gpu_list = gpu::list_gpu(pci_devices.clone())?;
+        let gpu_list = gpu::list_gpu(&pci_devices)?;
+        
+        // Find the discrete GPU (non-default) to check its bound state
+        let dgpu_pci = gpu_list
+            .values()
+            .find(|gpu| !gpu.is_default())
+            .map(|gpu| gpu.pci_address());
+        
+        // Determine initial mode: if dGPU exists and is bound, mode=1 (Hybrid), else mode=0 (Integrated)
+        let mode = match dgpu_pci {
+            Some(pci_addr) => {
+                if gpu::is_dgpu_bound(pci_addr)? {
+                    1 // Hybrid
+                } else {
+                    0 // Integrated
+                }
+            }
+            None => 0, // No discrete GPU found, default to Integrated
+        };
 
         Ok(Self {
-            current_mode: RwLock::new(0),
-            pci_devices,
+            current_mode: RwLock::new(mode),
+            _pci_devices: pci_devices,
             gpu_list,
         })
     }
 }
-#[interface(name = "com.luytan.daemon")]
+#[interface(name = "com.chainsaw.daemon")]
 impl Daemon {
     /// Set the GPU mode.
     ///
     /// 0 = Integrated, 1 = Hybrid, 2 = VFIO.
-    async fn set_mode(&self, mode: u8) -> String {
+    async fn set_mode(&self, mode: u8) -> fdo::Result<String> {
         let mut current_mode_lock = self.current_mode.write().await;
         match mode {
             0 => {
-                for (_, gpu) in &self.gpu_list {
+                for gpu in self.gpu_list.values() {
                     // Only unbind GPU if it's not the default/boot GPU
-                    if !gpu.is_default() {
-                        if let Err(e) = gpu::unbind_gpu(gpu.pci_address()) {
-                            return format!("GPU unbind failed: {}", e);
-                        }
+                    if !gpu.is_default() && let Err(e) = gpu::unbind_gpu(gpu.pci_address(), gpu.slot()) {
+                        return Err(fdo::Error::Failed(format!(
+                            "Failed to unbind GPU {}: {}",
+                            gpu.pci_address(),
+                            e
+                        )));
                     }
                 }
                 *current_mode_lock = mode;
-                format!("Set mode to {}", mode)
+                Ok(format!("Set mode to {}", mode))
             }
             1 => {
-                for (_, gpu) in &self.gpu_list {
+                for gpu in self.gpu_list.values() {
                     // Only bind GPU if it's not the default/boot GPU
-                    if !gpu.is_default() {
-                        if let Err(e) = gpu::bind_gpu(gpu.pci_address()) {
-                            return format!("GPU bind failed: {}", e);
-                        }
+                    if !gpu.is_default() && let Err(e) = gpu::bind_gpu(gpu.pci_address(), gpu.slot()) {
+                        return Err(fdo::Error::Failed(format!(
+                            "Failed to bind GPU {}: {}",
+                            gpu.pci_address(),
+                            e
+                        )));
                     }
                 }
                 *current_mode_lock = mode;
-                format!("Set mode to {}", mode)
+                Ok(format!("Set mode to {}", mode))
             }
             2 => {
                 *current_mode_lock = mode;
-                format!("Set mode to {}", mode)
+                Ok(format!("Set mode to {}", mode))
             }
-            _ => format!("Unknown mode={}", mode),
+            _ => Err(fdo::Error::InvalidArgs(format!("Unknown mode={}", mode))),
         }
     }
     /// Get the current GPU mode value.
@@ -74,8 +97,7 @@ impl Daemon {
             "VFIO".to_string(),
         ]
     }
-    }
-
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -94,8 +116,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         );
     }
     let _conn = connection::Builder::system()?
-        .name("com.luytan.daemon")?
-        .serve_at("/com/luytan/daemon", daemon)?
+        .name("com.chainsaw.daemon")?
+        .serve_at("/com/chainsaw/daemon", daemon)?
         .build()
         .await?;
 
