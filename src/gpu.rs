@@ -77,6 +77,36 @@ pub fn list_gpu(pci_devices: &HashMap<String, Device>) -> io::Result<HashMap<Str
 
     Ok(gpu_map)
 }
+
+/// Refresh GPU information for a specific PCI address
+fn refresh_gpu(pci_address: &str, pci_devices: &HashMap<String, Device>) -> io::Result<Option<Gpu>> {
+    let device = match pci_devices.values().find(|d| d.pci_address == pci_address) {
+        Some(d) => d,
+        None => return Ok(None),
+    };
+
+    if device.class.as_str() != "0x030000" {
+        return Ok(None);
+    }
+
+    let boot_vga_path = Path::new("/sys/bus/pci/devices")
+        .join(&device.pci_address)
+        .join("boot_vga");
+
+    let is_default = fs::read_to_string(boot_vga_path)?.trim() == "1";
+
+    let gpu = Gpu {
+        id: 0,
+        name: device.device_name.clone(),
+        pci: device.pci_address.clone(),
+        render: render_node_path(&device.pci_address),
+        default: is_default,
+        slot: find_pci_slot(&device.pci_address).unwrap_or(0),
+    };
+
+    Ok(Some(gpu))
+}
+
 /// unbind the gpu using the pci bus then power-down the device
 /// before unbinding, the function should check if the gpu is in use via fn is_sleeping
 pub fn unbind_gpu(pci_address: &str, slot: usize) -> io::Result<()> {
@@ -104,15 +134,16 @@ pub fn unbind_gpu(pci_address: &str, slot: usize) -> io::Result<()> {
     Ok(())
 }
 /// Re-bind the GPU to its driver.
-/// Currently this will poweron the gpu, remove the pci device and triggers a PCI rescan
-/// verification that the correct driver bound is not yet implemented.
-pub fn bind_gpu(_pci_address: &str, slot: usize) -> io::Result<String> {
+/// Powers on the GPU, triggers a PCI rescan, and returns the updated GPU info with new render node.
+pub fn bind_gpu(pci_address: &str, slot: usize) -> io::Result<Option<Gpu>> {
     // Power on the GPU before binding
     set_gpu_power(slot, true)?;
 
     iommu::pci_rescan()?;
 
-    Ok("Rescan issued; verification not yet implemented".to_string())
+    // Refresh PCI devices and get updated GPU info
+    let pci_devices = iommu::read_pci_devices()?;
+    refresh_gpu(pci_address, &pci_devices)
 }
 
 /// Checks the device power_state status, returns 1 if GPU is D3cold
