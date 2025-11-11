@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::{error::Error, future::pending};
-
+use config::Config;
 use chainsaw::iommu::Device;
 use chainsaw::{gpu, iommu};
 use tokio::sync::RwLock;
@@ -13,17 +13,25 @@ struct Daemon {
     _pci_devices: HashMap<String, Device>,
 }
 impl Daemon {
-    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(initial_mode: u8) -> Result<Self, Box<dyn std::error::Error>> {
         let pci_devices = iommu::read_pci_devices()?;
         let gpu_list = gpu::list_gpu(&pci_devices)?;
-        
+
+        Ok(Self {
+            current_mode: RwLock::new(initial_mode),
+            _pci_devices: pci_devices,
+            gpu_list,
+        })
+    }
+    
+    fn get_current_hardware_mode(&self) -> Result<u8, Box<dyn std::error::Error>> {
         // Find the discrete GPU (non-default) to check its bound state
-        let dgpu_pci = gpu_list
+        let dgpu_pci = self.gpu_list
             .values()
             .find(|gpu| !gpu.is_default())
             .map(|gpu| gpu.pci_address());
         
-        // Determine initial mode: if dGPU exists and is bound, mode=1 (Hybrid), else mode=0 (Integrated)
+        // Determine actual hardware mode: if dGPU exists and is bound, mode=1 (Hybrid), else mode=0 (Integrated)
         let mode = match dgpu_pci {
             Some(pci_addr) => {
                 if gpu::is_dgpu_bound(pci_addr)? {
@@ -34,12 +42,8 @@ impl Daemon {
             }
             None => 0, // No discrete GPU found, default to Integrated
         };
-
-        Ok(Self {
-            current_mode: RwLock::new(mode),
-            _pci_devices: pci_devices,
-            gpu_list,
-        })
+        
+        Ok(mode)
     }
 }
 #[interface(name = "com.chainsaw.daemon")]
@@ -101,9 +105,32 @@ impl Daemon {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let daemon = Daemon::new()?;
+    let config_path = "/etc/chainsaw.toml";
+    
+    // Create config file if it doesn't exist
+    if !std::path::Path::new(config_path).exists() {
+        println!("Config file not found, creating default config at {}", config_path);
+        let default_config = r#"# Chainsaw Daemon Configuration
+# This file was automatically generated
 
-    // Print GPU list at startup
+# GPU Mode: 0 = Integrated, 1 = Hybrid, 2 = VFIO
+mode = 1
+"#;
+        std::fs::write(config_path, default_config)?;
+    }
+    
+    let settings = Config::builder()
+        .add_source(config::File::with_name(config_path).required(false))
+        .build()?;
+    
+    // Read configured mode from config file
+    let configured_mode = settings.get_int("mode").unwrap_or(1) as u8;
+    println!("Configured mode from config: {}", configured_mode);
+    
+    // Create daemon with configured mode as initial mode
+    let daemon = Daemon::new(configured_mode)?;
+    
+    // Print GPU list at startup, useful for debugging
     println!("Detected GPUs:");
     for gpu in daemon.gpu_list.values() {
         println!(
@@ -114,6 +141,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
             render = gpu.render_node(),
             default = gpu.is_default()
         );
+    }
+    
+    // Check current hardware mode and compare with configured mode
+    let hardware_mode = daemon.get_current_hardware_mode()?;
+    println!("Current hardware mode: {}", hardware_mode);
+    // TODO: rename mode from number to string(eg. "Integrated", "Hybrid", "VFIO")
+    // Alsoo, find a way to apply the mode before sddm/login screen, issue might be linked to gpu::is_sleeping()
+    if hardware_mode != configured_mode {
+        println!("Hardware mode doesn't match configured mode, applying configured mode {}...", configured_mode);
+        daemon.set_mode(configured_mode).await?;
+    } else {
+        println!("Hardware mode matches configured mode: {}", configured_mode);
     }
     let _conn = connection::Builder::system()?
         .name("com.chainsaw.daemon")?
