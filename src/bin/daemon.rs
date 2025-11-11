@@ -45,6 +45,21 @@ impl Daemon {
         
         Ok(mode)
     }
+    
+    fn save_mode_to_config(mode: u8) -> Result<(), Box<dyn std::error::Error>> {
+        let config_path = "/etc/chainsaw.toml";
+        let config_content = format!(
+            r#"# Chainsaw Daemon Configuration
+# This file was automatically generated
+
+# GPU Mode: 0 = Integrated, 1 = Hybrid, 2 = VFIO
+mode = {}
+"#,
+            mode
+        );
+        std::fs::write(config_path, config_content)?;
+        Ok(())
+    }
 }
 #[interface(name = "com.chainsaw.daemon")]
 impl Daemon {
@@ -66,6 +81,10 @@ impl Daemon {
                     }
                 }
                 *current_mode_lock = mode;
+                // Save mode to config file
+                if let Err(e) = Self::save_mode_to_config(mode) {
+                    eprintln!("Warning: Failed to save mode to config: {}", e);
+                }
                 Ok(format!("Set mode to {}", mode))
             }
             1 => {
@@ -80,10 +99,18 @@ impl Daemon {
                     }
                 }
                 *current_mode_lock = mode;
+                // Save mode to config file
+                if let Err(e) = Self::save_mode_to_config(mode) {
+                    eprintln!("Warning: Failed to save mode to config: {}", e);
+                }
                 Ok(format!("Set mode to {}", mode))
             }
             2 => {
                 *current_mode_lock = mode;
+                // Save mode to config file
+                if let Err(e) = Self::save_mode_to_config(mode) {
+                    eprintln!("Warning: Failed to save mode to config: {}", e);
+                }
                 Ok(format!("Set mode to {}", mode))
             }
             _ => Err(fdo::Error::InvalidArgs(format!("Unknown mode={}", mode))),
@@ -124,9 +151,7 @@ mode = 1
         .build()?;
     
     // Read configured mode from config file
-    let configured_mode = settings.get_int("mode").unwrap_or(1) as u8;
-    println!("Configured mode from config: {}", configured_mode);
-    
+    let configured_mode = settings.get_int("mode").unwrap_or(1) as u8;    
     // Create daemon with configured mode as initial mode
     let daemon = Daemon::new(configured_mode)?;
     
@@ -145,6 +170,7 @@ mode = 1
     
     // Check current hardware mode and compare with configured mode
     let hardware_mode = daemon.get_current_hardware_mode()?;
+    println!("Configured mode from config: {}", configured_mode);
     println!("Current hardware mode: {}", hardware_mode);
     // TODO: rename mode from number to string(eg. "Integrated", "Hybrid", "VFIO")
     // Alsoo, find a way to apply the mode before sddm/login screen, issue might be linked to gpu::is_sleeping()
